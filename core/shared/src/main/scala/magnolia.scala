@@ -67,6 +67,9 @@ object Magnolia {
     import c.universe._
     import internal._
 
+    def fail(msg: String): Nothing = c.abort(c.enclosingPosition, s"magnolia: $msg")
+    def info(msg: String): Unit = c.info(c.enclosingPosition, s"magnolia: $msg", true)
+
     val debug = c.macroApplication.symbol.annotations
       .find(_.tree.tpe <:< typeOf[debug])
       .flatMap(_.tree.children.tail.collectFirst { case Literal(Constant(s: String)) => s })
@@ -88,10 +91,7 @@ object Magnolia {
     }
 
     val typeConstructor = typeDefs.headOption.fold {
-      c.abort(
-        c.enclosingPosition,
-        s"magnolia: the derivation $prefixObject does not define the Typeclass type constructor"
-      )
+      fail(s"the derivation $prefixObject does not define the Typeclass type constructor")
     }(_.typeConstructor)
 
     def checkMethod(termName: String, category: String, expected: String): Unit = {
@@ -101,15 +101,11 @@ object Magnolia {
           cls.asType.toType.decl(term) != NoSymbol
         }
         .getOrElse {
-          c.abort(
-            c.enclosingPosition,
-            s"magnolia: the method `$termName` must be defined on the derivation $prefixObject to derive typeclasses for $category"
-          )
+          fail(s"the method `$termName` must be defined on the derivation $prefixObject to derive typeclasses for $category")
         }
       val firstParamBlock = combineClass.asType.toType.decl(term).asTerm.asMethod.paramLists.head
       if (firstParamBlock.lengthCompare(1) != 0)
-        c.abort(c.enclosingPosition,
-                s"magnolia: the method `combine` should take a single parameter of type $expected")
+        fail(s"the method `combine` should take a single parameter of type $expected")
     }
 
     // FIXME: Only run these methods if they're used, particularly `dispatch`
@@ -145,8 +141,7 @@ object Magnolia {
               val typeClassName = s"${missingType.typeSymbol.name.decodedName}.Typeclass"
               val genericType = missingType.typeArgs.head
               val trace = stack.trace.mkString("    in ", "\n    in ", "\n")
-              c.abort(c.enclosingPosition,
-                      s"magnolia: could not find $typeClassName for type $genericType\n$trace")
+              fail(s"could not find $typeClassName for type $genericType\n$trace")
             }
         }
       }
@@ -306,9 +301,7 @@ object Magnolia {
         }
 
         if (subtypes.isEmpty) {
-          c.info(c.enclosingPosition,
-                 s"magnolia: could not find any direct subtypes of $typeSymbol",
-                 force = true)
+          info(s"could not find any direct subtypes of $typeSymbol")
 
           c.abort(c.enclosingPosition, "")
         }
@@ -378,8 +371,7 @@ object Magnolia {
       else for (tree <- result) yield c.untypecheck(removeDeferred.transform(tree))
 
     dereferencedResult.getOrElse {
-      c.abort(c.enclosingPosition,
-              s"magnolia: could not infer $prefixName.Typeclass for type $genericType")
+      fail(s"could not infer $prefixName.Typeclass for type $genericType")
     }
   }
 
