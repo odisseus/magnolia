@@ -243,7 +243,7 @@ object Tests extends TestApp {
       } catch {
         case NonFatal(e) => e.getMessage
       }
-    }.assert(_ == "Cannot patch value `Person(Bob,42)`, expected 2 fields but got 3")
+    }.assert(_ == "Cannot patch value `Person(Bob,42)`, expected 2 fields but got 3", _ => "test failed")
 
     test("throw on an illegal patch attempt with field type mismatch") {
       // these two implicits can be removed once https://github.com/propensive/magnolia/issues/58 is closed

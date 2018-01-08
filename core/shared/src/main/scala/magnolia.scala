@@ -96,7 +96,7 @@ object Magnolia {
 
     def checkMethod(termName: String, category: String, expected: String): Unit = {
       val term = TermName(termName)
-      val combineClass = c.prefix.tree.tpe.baseClasses
+      val combineClass = prefixType.baseClasses
         .find { cls =>
           cls.asType.toType.decl(term) != NoSymbol
         }
@@ -268,6 +268,7 @@ object Magnolia {
             ..$preAssignments
             val $paramsVal: $scalaPkg.Array[$magnoliaPkg.Param[$typeConstructor, $genericType]] =
               new $scalaPkg.Array(${assignments.length})
+            
             ..$assignments
 
             $typeNameDef
@@ -282,11 +283,14 @@ object Magnolia {
                   val msg = "`" + $typeName.full + "` has " + $paramsVal.length + " fields, not " + $fieldValues.size
                   throw new java.lang.IllegalArgumentException(msg)
                 }
+                
                 new $genericType(..${caseParams.zipWithIndex.map {
-          case (typeclass, idx) =>
-            val arg = q"$fieldValues($idx).asInstanceOf[${typeclass.paramType}]"
-            if (typeclass.repeated) q"$arg: _*" else arg
-        }})}))
+                  case (typeclass, idx) =>
+                    val arg = q"$fieldValues($idx).asInstanceOf[${typeclass.paramType}]"
+                    if (typeclass.repeated) q"$arg: _*" else arg
+                 }})
+              }
+            ))
           }""")
       } else if (isSealedTrait) {
         val genericSubtypes = classType.get.knownDirectSubclasses.to[List]
@@ -308,11 +312,11 @@ object Magnolia {
 
         val subtypesVal: TermName = TermName(c.freshName("subtypes"))
 
-        val typeclasses = for (subType <- subtypes) yield {
+        val typeclasses = subtypes.map { subtype =>
           val path = CoproductType(genericType.toString)
           val frame = stack.Frame(path, resultType, assignedName)
-          subType -> stack.recurse(frame, appliedType(typeConstructor, subType)) {
-            typeclassTree(subType, typeConstructor)
+          subtype -> stack.recurse(frame, appliedType(typeConstructor, subtype)) {
+            typeclassTree(subtype, typeConstructor)
           }
         }
 
