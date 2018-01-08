@@ -84,15 +84,19 @@ object Magnolia {
     val prefixObject = prefixType.typeSymbol
     val prefixName = prefixObject.name.decodedName
 
-    val typeDefs = prefixType.baseClasses.flatMap { cls =>
-      cls.asType.toType.decls.filter(_.isType).find(_.name.toString == "Typeclass").map { tpe =>
-        tpe.asType.toType.asSeenFrom(prefixType, cls)
+    def getTypeMember(typeMember: String) = {
+      val typeDefs = prefixType.baseClasses.flatMap { cls =>
+        cls.asType.toType.decls.filter(_.isType).find(_.name.toString == typeMember).map { tpe =>
+          tpe.asType.toType.asSeenFrom(prefixType, cls)
+        }
+      }
+
+      typeDefs.headOption.map(_.typeConstructor).getOrElse {
+        fail(s"the derivation $prefixObject does not define the Typeclass $typeMember type constructor")
       }
     }
 
-    val typeConstructor = typeDefs.headOption.fold {
-      fail(s"the derivation $prefixObject does not define the Typeclass type constructor")
-    }(_.typeConstructor)
+    val typeclassConstructor = getTypeMember("Typeclass")
 
     def checkMethod(termName: String, category: String, expected: String): Unit = {
       val term = TermName(termName)
@@ -352,7 +356,7 @@ object Magnolia {
     }
 
     val genericType: Type = weakTypeOf[T]
-    val searchType = appliedType(typeConstructor, genericType)
+    val searchType = appliedType(typeclassConstructor, genericType)
     val directlyReentrant = stack.top.exists(_.searchType =:= searchType)
     if (directlyReentrant) throw DirectlyReentrantException()
 
@@ -362,7 +366,7 @@ object Magnolia {
         q"$magnoliaPkg.Deferred[$searchType](${enclosingRef.toString})"
       }
       .orElse {
-        directInferImplicit(genericType, typeConstructor)
+        directInferImplicit(genericType, typeclassConstructor)
       }
 
     for (tree <- result) if (debug.isDefined && genericType.toString.contains(debug.get)) {
