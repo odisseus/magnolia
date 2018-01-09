@@ -28,6 +28,7 @@ class Length(val value: Int) extends AnyVal
 
 case class FruitBasket(fruits: Fruit*)
 case class Lunchbox(fruit: Fruit, drink: String)
+
 object Fruit {
   implicit val showFruit: Show[String, Fruit] =
     new Show[String, Fruit] { def show(f: Fruit): String = f.name }
@@ -45,6 +46,7 @@ case class `%%`(`/`: Int, `#`: String)
 
 case class Param(a: String, b: String)
 case class Test(param: Param)
+
 object Test {
   def apply(): Test = Test(Param("", ""))
 
@@ -355,5 +357,13 @@ object Tests extends TestApp {
 
       Show.gen[Path[String]].show(OffRoad(Some(Crossroad(Destination("A"), Destination("B")))))
     }.assert(_ == "OffRoad(path=Crossroad(left=Destination(value=A),right=Destination(value=B)))")
+
+    test("does not derive for coproduct without dispatch defined") {
+      scalac"DefaultNoCoproduct.gen[Entity]"
+    }.assert(_ == TypecheckError("magnolia: the method `dispatch` should be defined on the derivation object"))
+    
+    test("still derives for case class without dispatch defined") {
+      DefaultNoCoproduct.gen[Company].default
+    }.assert(_ == Company(""))
   }
 }

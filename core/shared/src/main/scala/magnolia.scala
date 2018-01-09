@@ -96,30 +96,26 @@ object Magnolia {
       }
     }
 
-    val typeclassConstructor = getTypeMember("Typeclass")
-
-    def checkMethod(termName: String, category: String, expected: String): Unit = {
+    def getMethod(termName: String)(fn: MethodSymbol => Tree): Option[Tree] = {
       val term = TermName(termName)
-      val combineClass = prefixType.baseClasses
-        .find { cls =>
-          cls.asType.toType.decl(term) != NoSymbol
-        }
-        .getOrElse {
-          fail(s"the method `$termName` must be defined on the derivation $prefixObject to derive typeclasses for $category")
-        }
-      val firstParamBlock = combineClass.asType.toType.decl(term).asTerm.asMethod.paramLists.head
-      if (firstParamBlock.lengthCompare(1) != 0)
-        fail(s"the method `combine` should take a single parameter of type $expected")
+      val cls = prefixType.baseClasses.find(_.asType.toType.decl(term) != NoSymbol)
+      cls.map(_.asType.toType.decl(term).asTerm.asMethod).map(fn)
     }
 
-    // FIXME: Only run these methods if they're used, particularly `dispatch`
-    checkMethod("combine", "case classes", "CaseClass[Typeclass, _]")
-    checkMethod("dispatch", "sealed traits", "SealedTrait[Typeclass, _]")
+    val typeclassConstructor = getTypeMember("Typeclass")
+    
+    lazy val combineMethod = getMethod("combine") { m => q"${c.prefix}.combine" }.getOrElse {
+      fail("the method `combine` should be defined on the derivation object")
+    }
+    
+    lazy val dispatchMethod = getMethod("dispatch") { m => q"${c.prefix}.dispatch" }.getOrElse {
+      fail("the method `dispatch` should be defined on the derivation object")
+    }
 
     val removeDeferred = new Transformer {
       override def transform(tree: Tree) = tree match {
-        case q"$magnolia.Deferred.apply[$_](${Literal(Constant(method: String))})"
-            if magnolia.symbol == magnoliaPkg =>
+        case q"$pkg.Deferred.apply[$_](${Literal(Constant(method: String))})"
+            if pkg.symbol == magnoliaPkg =>
           q"${TermName(method)}"
         case _ =>
           super.transform(tree)
@@ -183,7 +179,7 @@ object Magnolia {
       val result = if (isCaseObject) {
         val impl = q"""
           $typeNameDef
-          ${c.prefix}.combine($magnoliaPkg.Magnolia.caseClass[$typeConstructor, $genericType](
+          $combineMethod($magnoliaPkg.Magnolia.caseClass[$typeConstructor, $genericType](
             $typeName, true, false, new $scalaPkg.Array(0), _ => ${genericType.typeSymbol.asClass.module})
           )
         """
@@ -277,7 +273,7 @@ object Magnolia {
 
             $typeNameDef
             
-            ${c.prefix}.combine($magnoliaPkg.Magnolia.caseClass[$typeConstructor, $genericType](
+            $combineMethod($magnoliaPkg.Magnolia.caseClass[$typeConstructor, $genericType](
               $typeName,
               false,
               $isValueClass,
@@ -342,7 +338,7 @@ object Magnolia {
 
             $typeNameDef
             
-            ${c.prefix}.dispatch(new $magnoliaPkg.SealedTrait(
+            $dispatchMethod(new $magnoliaPkg.SealedTrait(
               $typeName,
               $subtypesVal: $scalaPkg.Array[$magnoliaPkg.Subtype[$typeConstructor, $genericType]])
             ): $resultType

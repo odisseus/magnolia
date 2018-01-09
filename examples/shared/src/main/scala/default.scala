@@ -36,3 +36,19 @@ object Default {
   /** generates default instances of [[Default]] for case classes and sealed traits */
   implicit def gen[T]: Default[T] = macro Magnolia.gen[T]
 }
+
+object DefaultNoCoproduct {
+
+  type Typeclass[T] = Default[T]
+
+  /** constructs a default for each parameter, using the constructor default (if provided),
+    *  otherwise using a typeclass-provided default */
+  def combine[T](ctx: CaseClass[Default, T]): Default[T] = new Default[T] {
+    def default = ctx.construct { param =>
+      param.default.getOrElse(param.typeclass.default)
+    }
+  }
+  
+  /** generates default instances of [[Default]] for case classes and sealed traits */
+  implicit def gen[T]: Default[T] = macro Magnolia.gen[T]
+}
