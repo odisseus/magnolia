@@ -1,3 +1,6 @@
 [submodule "contextual"]
 	path = contextual
 	url = git@github.com:propensive/contextual.git
+[submodule "probation"]
+	path = probation
+	url = git@github.com:propensive/probation.git
