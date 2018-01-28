@@ -3,3 +3,8 @@ target
 .js
 .native
 .idea
+/bin
+/pkg
+/lib
+/.bloop-config
+.*.swp

@@ -1,7 +1,7 @@
 package magnolia.tests
 
 import language.experimental.macros
-import estrapade.{test, TestApp}
+import probation.{test, TestApp}
 import contextual.data.scalac._
 import contextual.data.fqt._
 import contextual.data.txt._
