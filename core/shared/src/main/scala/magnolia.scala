@@ -1,13 +1,132 @@
 package magnolia
 
 import scala.collection.mutable
-import scala.language.existentials
-import scala.language.higherKinds
+import language.existentials, language.implicitConversions, language.higherKinds
 import scala.reflect.macros._
 
 /** the object which defines the Magnolia macro */
 object Magnolia {
   import CompileTimeState._
+
+  implicit def ext[Ctx <: whitebox.Context](ctx: Ctx): ContextExt[ctx.type] = new ContextExt(ctx)
+
+  class ContextExt[Ctx <: whitebox.Context](val context: Ctx) {
+    import context._, universe.{typeOf => _, _}
+
+    val prefixType = prefix.tree.tpe
+    val prefixObject = prefixType.typeSymbol
+    val prefixName = prefixObject.name.decodedName
+
+    val magnoliaPkg = mirror.staticPackage("magnolia")
+    val magnoliaObj = q"$magnoliaPkg.Magnolia"
+    val scalaPkg = mirror.staticPackage("scala")
+    val arrayObj = q"$scalaPkg.Array"
+    val noneObj = q"$scalaPkg.None"
+    val emptyArray = q"$arrayObj.empty"
+    val scalaSeqType = typeOf[Seq[_]].typeConstructor
+    
+    val primitives = Set(typeOf[Double],
+                         typeOf[Float],
+                         typeOf[Short],
+                         typeOf[Byte],
+                         typeOf[Int],
+                         typeOf[Long],
+                         typeOf[Char],
+                         typeOf[Boolean],
+                         typeOf[Unit])
+
+    def companionRef(genericType: Type) = GlobalUtil.patchedCompanionRef(context)(genericType.dealias)
+ 
+    /** gets the short, decoded name of a symbol */
+    def shortName(sym: Symbol): String = sym.name.decodedName.toString
+
+    /** efficiently constructs a new array of the specified type and populates it with the trees
+     *  supplied */
+    def newArray(typ: Tree, elements: List[Tree]): (TermName, List[Tree]) = {
+      val identifier = TermName(freshName("array"))
+      val assignments = elements.zipWithIndex.map { case (e, idx) => q"$identifier($idx) = $e" }
+      
+      (identifier, q"""
+        val $identifier: $scalaPkg.Array[$typ] = new $scalaPkg.Array(${elements.length})
+        ..$assignments
+      """.children)
+    }
+
+    def fail(msg: String): Nothing = abort(enclosingPosition, s"magnolia: $msg")
+    
+    def message(msg: String): Unit = {
+      info(enclosingPosition, s"magnolia: $msg", force = true)
+      abort(enclosingPosition, "")
+    }
+   
+    def mkTypeName(genericType: Type): (TermName, Tree) = {
+      val typeName = TermName(freshName("typeName"))
+      val typeNameDef =
+        q"val $typeName = $magnoliaPkg.TypeName(${genericType.typeSymbol.owner.fullName}, ${shortName(genericType.typeSymbol)})"
+      (typeName, typeNameDef)
+    }
+
+    
+    def mkCaseObject(typeConstructor: Type, genericType: Type, annotationTrees: List[Tree]) = {
+      val (typeName, typeNameDef) = mkTypeName(genericType)
+      
+      val parameters: List[Tree] = List(q"$typeName", q"true", q"false", emptyArray, q"$scalaPkg.Array(..$annotationTrees)", q"{ _ => ${genericType.typeSymbol.asClass.module} }")
+      q"""
+        $typeNameDef
+        $prefix.combine($magnoliaObj.caseClass[$typeConstructor, $genericType](..$parameters))
+      """
+    }
+        
+    def mkSealedTrait(typeConstructor: Type, genericType: Type, annotationTrees: List[Tree], resultType: Type, assignments: List[Tree]): Tree = {
+      val subtypesType = tq"${magnoliaPkg}.Subtype[$typeConstructor, $genericType]"
+      val (subtypesVal, subtypesArray) = newArray(subtypesType, assignments)
+      val (typeName, typeNameDef) = mkTypeName(genericType)
+
+      q"""{
+        ..$subtypesArray
+
+        $typeNameDef
+        
+        $prefix.dispatch(new $magnoliaPkg.SealedTrait(
+          $typeName,
+          $subtypesVal: $scalaPkg.Array[$magnoliaPkg.Subtype[$typeConstructor, $genericType]],
+          $scalaPkg.Array(..$annotationTrees)
+        )): $resultType
+      }"""
+    }
+    
+    def checkMethod(termName: String, category: String, expected: String): Unit = {
+      val term = TermName(termName)
+      val combineClass = prefix.tree.tpe.baseClasses.find(_.asType.toType.decl(term) != NoSymbol)
+        .getOrElse {
+          fail(s"the method `$termName` must be defined on the derivation $prefixObject to derive typeclasses for $category")
+        }
+      val firstParamBlock = combineClass.asType.toType.decl(term).asTerm.asMethod.paramLists.head
+      if (firstParamBlock.length != 1)
+        fail(s"the method `combine` should take a single parameter of type $expected")
+    }
+    
+    def getDefaults(headParamList: Option[List[TermSymbol]], genericType: Type) = headParamList.map { plist =>
+      
+      val companionSym = companionRef(genericType).symbol.asModule.info
+      
+      // note: This causes the namer/typer to generate the synthetic default methods by forcing
+      // the typeSignature of the "default" factory method to be visited.
+      // It feels like it shouldn't be needed, but we'll get errors otherwise (as discovered after 6 hours debugging)
+
+      val primaryFactoryMethod = companionSym.decl(TermName("apply")).alternatives.lastOption
+      primaryFactoryMethod.foreach(_.asMethod.typeSignature)
+
+      val indexedConstructorParams = plist.zipWithIndex
+      indexedConstructorParams.map {
+        case (p, idx) =>
+          if (p.isParamWithDefault) {
+            val method = TermName("apply$default$" + (idx + 1))
+            q"$scalaPkg.Some(${companionRef(genericType)}.$method)"
+          } else noneObj
+      }
+    } getOrElse List(noneObj)
+  }
 
   /** derives a generic typeclass instance for the type `T`
     *
@@ -65,61 +184,31 @@ object Magnolia {
     *  */
   def gen[T: c.WeakTypeTag](c: whitebox.Context): c.Tree = Stack.withContext(c) { stack =>
     import c.universe._
-    import internal._
 
     val debug = c.macroApplication.symbol.annotations
       .find(_.tree.tpe <:< typeOf[debug])
       .flatMap(_.tree.children.tail.collectFirst { case Literal(Constant(s: String)) => s })
 
-    val magnoliaPkg = c.mirror.staticPackage("magnolia")
-    val scalaPkg = c.mirror.staticPackage("scala")
-
     val repeatedParamClass = definitions.RepeatedParamClass
-    val scalaSeqType = typeOf[Seq[_]].typeConstructor
 
-    val prefixType = c.prefix.tree.tpe
-    val prefixObject = prefixType.typeSymbol
-    val prefixName = prefixObject.name.decodedName
-
-    val typeDefs = prefixType.baseClasses.flatMap { cls =>
+    val typeDefs = c.prefixType.baseClasses.flatMap { cls =>
       cls.asType.toType.decls.filter(_.isType).find(_.name.toString == "Typeclass").map { tpe =>
-        tpe.asType.toType.asSeenFrom(prefixType, cls)
+        tpe.asType.toType.asSeenFrom(c.prefixType, cls)
       }
     }
 
     val typeConstructor = typeDefs.headOption.fold {
-      c.abort(
-        c.enclosingPosition,
-        s"magnolia: the derivation $prefixObject does not define the Typeclass type constructor"
-      )
+      c.fail(s"the derivation ${c.prefixObject} does not define the Typeclass type constructor")
     }(_.typeConstructor)
 
-    def checkMethod(termName: String, category: String, expected: String): Unit = {
-      val term = TermName(termName)
-      val combineClass = c.prefix.tree.tpe.baseClasses
-        .find { cls =>
-          cls.asType.toType.decl(term) != NoSymbol
-        }
-        .getOrElse {
-          c.abort(
-            c.enclosingPosition,
-            s"magnolia: the method `$termName` must be defined on the derivation $prefixObject to derive typeclasses for $category"
-          )
-        }
-      val firstParamBlock = combineClass.asType.toType.decl(term).asTerm.asMethod.paramLists.head
-      if (firstParamBlock.lengthCompare(1) != 0)
-        c.abort(c.enclosingPosition,
-                s"magnolia: the method `combine` should take a single parameter of type $expected")
-    }
-
     // FIXME: Only run these methods if they're used, particularly `dispatch`
-    checkMethod("combine", "case classes", "CaseClass[Typeclass, _]")
-    checkMethod("dispatch", "sealed traits", "SealedTrait[Typeclass, _]")
+    c.checkMethod("combine", "case classes", "CaseClass[Typeclass, _]")
+    c.checkMethod("dispatch", "sealed traits", "SealedTrait[Typeclass, _]")
 
     val removeDeferred = new Transformer {
       override def transform(tree: Tree) = tree match {
         case q"$magnolia.Deferred.apply[$_](${Literal(Constant(method: String))})"
-            if magnolia.symbol == magnoliaPkg =>
+            if magnolia.symbol == c.magnoliaPkg =>
           q"${TermName(method)}"
         case _ =>
           super.transform(tree)
@@ -128,13 +217,13 @@ object Magnolia {
 
     def typeclassTree(genericType: Type, typeConstructor: Type): Tree = {
       val searchType = appliedType(typeConstructor, genericType)
-      val deferredRef = for (methodName <- stack find searchType) yield {
+      val deferredRef = stack.find(searchType).map { methodName =>
         val methodAsString = methodName.decodedName.toString
-        q"$magnoliaPkg.Deferred.apply[$searchType]($methodAsString)"
+        q"${c.magnoliaPkg}.Deferred.apply[$searchType]($methodAsString)"
       }
 
       deferredRef.getOrElse {
-        val path = ChainedImplicit(s"$prefixName.Typeclass", genericType.toString)
+        val path = ChainedImplicit(s"${c.prefixName}.Typeclass", genericType.toString)
         val frame = stack.Frame(path, searchType, termNames.EMPTY)
         stack.recurse(frame, searchType) {
           Option(c.inferImplicitValue(searchType))
@@ -145,60 +234,30 @@ object Magnolia {
               val typeClassName = s"${missingType.typeSymbol.name.decodedName}.Typeclass"
               val genericType = missingType.typeArgs.head
               val trace = stack.trace.mkString("    in ", "\n    in ", "\n")
-              c.abort(c.enclosingPosition,
-                      s"magnolia: could not find $typeClassName for type $genericType\n$trace")
+              c.fail(s"could not find $typeClassName for type $genericType\n$trace")
             }
         }
       }
     }
 
     def directInferImplicit(genericType: Type, typeConstructor: Type): Option[Tree] = {
-      val genericTypeName = genericType.typeSymbol.name.decodedName.toString.toLowerCase
+      val genericTypeName = c.shortName(genericType.typeSymbol).toLowerCase
       val assignedName = TermName(c.freshName(s"${genericTypeName}Typeclass"))
       val typeSymbol = genericType.typeSymbol
       val classType = if (typeSymbol.isClass) Some(typeSymbol.asClass) else None
+      
       val isCaseClass = classType.exists(_.isCaseClass)
       val isCaseObject = classType.exists(_.isModuleClass)
       val isSealedTrait = classType.exists(_.isSealed)
 
       val classAnnotationTrees = typeSymbol.annotations.map(_.tree)
 
-      val primitives = Set(typeOf[Double],
-                           typeOf[Float],
-                           typeOf[Short],
-                           typeOf[Byte],
-                           typeOf[Int],
-                           typeOf[Long],
-                           typeOf[Char],
-                           typeOf[Boolean],
-                           typeOf[Unit])
-
-      val isValueClass = genericType <:< typeOf[AnyVal] && !primitives.exists(_ =:= genericType)
+      val isValueClass = genericType <:< typeOf[AnyVal] && !c.primitives.exists(_ =:= genericType)
 
       val resultType = appliedType(typeConstructor, genericType)
 
-      val typeName = TermName(c.freshName("typeName"))
-      val typeNameDef = {
-        val ts = genericType.typeSymbol
-        q"val $typeName = $magnoliaPkg.TypeName(${ts.owner.fullName}, ${ts.name.decodedName.toString})"
-      }
-
-      val result = if (isCaseObject) {
-        val impl = q"""
-          $typeNameDef
-          ${c.prefix}.combine($magnoliaPkg.Magnolia.caseClass[$typeConstructor, $genericType](
-            $typeName,
-            true,
-            false,
-            new $scalaPkg.Array(0),
-            $scalaPkg.Array(..$classAnnotationTrees),
-            _ => ${genericType.typeSymbol.asClass.module}
-          ))
-        """
-        Some(impl)
-      } else if (isCaseClass || isValueClass) {
-
-        val companionRef = GlobalUtil.patchedCompanionRef(c)(genericType.dealias)
+      val result = if (isCaseObject) Some(c.mkCaseObject(typeConstructor, genericType, classAnnotationTrees))
+      else if (isCaseClass || isValueClass) {
 
         val headParamList = {
           val primaryConstructor = classType map (_.primaryConstructor)
@@ -212,135 +271,94 @@ object Magnolia {
             m.asMethod
         }
 
-        case class CaseParam(sym: MethodSymbol,
-                             repeated: Boolean,
-                             typeclass: Tree,
-                             paramType: Type,
-                             ref: TermName
-                            )
+        case class CaseParam(sym: MethodSymbol, repeated: Boolean, typeclass: Tree, paramType: Type, ref: TermName)
 
-        val caseParamsReversed = caseClassParameters.foldLeft[List[CaseParam]](Nil) {
+        val caseParams = caseClassParameters.foldLeft[List[CaseParam]](Nil) {
           (acc, param) =>
-            val paramName = param.name.decodedName.toString
             val paramTypeSubstituted = param.typeSignatureIn(genericType).resultType
 
             val (repeated, paramType) = paramTypeSubstituted match {
               case TypeRef(_, `repeatedParamClass`, typeArgs) =>
-                true -> appliedType(scalaSeqType, typeArgs)
+                (true, appliedType(c.scalaSeqType, typeArgs))
               case tpe =>
-                false -> tpe
+                (false, tpe)
             }
+            
+            val paramName = c.shortName(param)
 
-            acc
-              .find(_.paramType =:= paramType)
-              .fold {
-                val path = ProductType(paramName, genericType.toString)
-                val frame = stack.Frame(path, resultType, assignedName)
-                val derivedImplicit =
-                  stack.recurse(frame, appliedType(typeConstructor, paramType)) {
-                    typeclassTree(paramType, typeConstructor)
-                  }
+            acc.find(_.paramType =:= paramType).fold {
+              val path = ProductType(paramName, genericType.toString)
+              val frame = stack.Frame(path, resultType, assignedName)
+              val derivedImplicit =
+                stack.recurse(frame, appliedType(typeConstructor, paramType)) {
+                  typeclassTree(paramType, typeConstructor)
+                }
 
-                val ref = TermName(c.freshName("paramTypeclass"))
-                val assigned = q"""lazy val $ref = $derivedImplicit"""
-                CaseParam(param, repeated, assigned, paramType, ref) :: acc
-              } { backRef =>
-                CaseParam(param, repeated, q"()", paramType, backRef.ref) :: acc
-              }
-        }
+              val ref = TermName(c.freshName("paramTypeclass"))
+              val assigned = q"""lazy val $ref = $derivedImplicit"""
+              CaseParam(param, repeated, assigned, paramType, ref) :: acc
+            } { backRef =>
+              CaseParam(param, repeated, q"()", paramType, backRef.ref) :: acc
+            }
+        }.reverse
 
-        val caseParams = caseParamsReversed.reverse
-
-        val paramsVal: TermName = TermName(c.freshName("parameters"))
         val fieldValues: TermName = TermName(c.freshName("fieldValues"))
 
         val preAssignments = caseParams.map(_.typeclass)
 
-
-        val defaults = headParamList map { plist =>
-          // note: This causes the namer/typer to generate the synthetic default methods by forcing
-          // the typeSignature of the "default" factory method to be visited.
-          // It feels like it shouldn't be needed, but we'll get errors otherwise (as discovered after 6 hours debugging)
-
-          val companionSym = companionRef.symbol.asModule.info
-          val primaryFactoryMethod = companionSym.decl(TermName("apply")).alternatives.lastOption
-          primaryFactoryMethod.foreach(_.asMethod.typeSignature)
-
-          val indexedConstructorParams = plist.zipWithIndex
-          indexedConstructorParams.map {
-            case (p, idx) =>
-              if (p.isParamWithDefault) {
-                val method = TermName("apply$default$" + (idx + 1))
-                q"$scalaPkg.Some($companionRef.$method)"
-              } else q"$scalaPkg.None"
-          }
-        } getOrElse List(q"$scalaPkg.None")
-
+        val defaults = c.getDefaults(headParamList, genericType)
         val annotations: List[List[Tree]] = headParamList.toList.flatten map { param =>
           param.annotations map { _.tree }
         }
 
-        val assignments = caseParams.zip(defaults).zip(annotations).zipWithIndex.map {
-          case (((CaseParam(param, repeated, typeclass, paramType, ref), defaultVal), annList), idx) =>
-            q"""$paramsVal($idx) = $magnoliaPkg.Magnolia.param[$typeConstructor, $genericType,
-                $paramType](
-            ${param.name.decodedName.toString},
-            $repeated,
-            $ref,
-            $defaultVal,
-            _.${param.name},
-            $scalaPkg.Array(..$annList)
-          )"""
+        val assignments = caseParams.zip(defaults).zip(annotations).map {
+          case ((CaseParam(param, repeated, typeclass, paramType, ref), defaultVal), annList) =>
+            q"""${c.magnoliaObj}.param[$typeConstructor, $genericType, $paramType](${c.shortName(param)}, $repeated, $ref, $defaultVal, _.${param.name}, ${c.scalaPkg}.Array(..$annList))"""
         }
 
-        Some(q"""{
-            ..$preAssignments
-            val $paramsVal: $scalaPkg.Array[$magnoliaPkg.Param[$typeConstructor, $genericType]] =
-              new $scalaPkg.Array(${assignments.length})
-            ..$assignments
+        val paramType = tq"${c.magnoliaPkg}.Param[$typeConstructor, $genericType]"
+        val (paramVal, paramsArray) = c.newArray(paramType, assignments)
+        val (typeName, typeNameDef) = c.mkTypeName(genericType)
 
+        Some(q"""
+            ..$preAssignments
+            ..$paramsArray
             $typeNameDef
             
-            ${c.prefix}.combine($magnoliaPkg.Magnolia.caseClass[$typeConstructor, $genericType](
+            ${c.prefix}.combine(${c.magnoliaObj}.caseClass[$typeConstructor, $genericType](
               $typeName,
               false,
               $isValueClass,
-              $paramsVal,
-              $scalaPkg.Array(..$classAnnotationTrees),
-              ($fieldValues: $scalaPkg.Seq[Any]) => {
-                if ($fieldValues.lengthCompare($paramsVal.length) != 0) {
-                  val msg = "`" + $typeName.full + "` has " + $paramsVal.length + " fields, not " + $fieldValues.size
-                  throw new java.lang.IllegalArgumentException(msg)
+              $paramVal,
+              ${c.scalaPkg}.Array(..$classAnnotationTrees),
+              { ($fieldValues: ${c.scalaPkg}.Seq[Any]) =>
+                if($fieldValues.lengthCompare($paramVal.length) != 0) {
+                  val msg = "`" + $typeName.full + "` has " + $paramVal.length + " fields, not " + $fieldValues.size
+                  throw new _root_.java.lang.IllegalArgumentException(msg)
                 }
                 new $genericType(..${caseParams.zipWithIndex.map {
-          case (typeclass, idx) =>
-            val arg = q"$fieldValues($idx).asInstanceOf[${typeclass.paramType}]"
-            if (typeclass.repeated) q"$arg: _*" else arg
-        }})}))
-          }""")
+                  case (typeclass, idx) =>
+                    val arg = q"$fieldValues($idx).asInstanceOf[${typeclass.paramType}]"
+                    if(typeclass.repeated) q"$arg: _*" else arg
+                } })
+              })
+            )""")
       } else if (isSealedTrait) {
         val genericSubtypes = classType.get.knownDirectSubclasses.to[List]
+        
         val subtypes = genericSubtypes.map { sub =>
           val subType = sub.asType.toType // FIXME: Broken for path dependent types
           val typeParams = sub.asType.typeParams
-          val typeArgs = thisType(sub).baseType(genericType.typeSymbol).typeArgs
+          val typeArgs = internal.thisType(sub).baseType(genericType.typeSymbol).typeArgs
           val mapping = (typeArgs.map(_.typeSymbol), genericType.typeArgs).zipped.toMap
           val newTypeArgs = typeParams.map(mapping.withDefault(_.asType.toType))
           val applied = appliedType(subType.typeConstructor, newTypeArgs)
-          existentialAbstraction(typeParams, applied)
+          internal.existentialAbstraction(typeParams, applied)
         }
 
-        if (subtypes.isEmpty) {
-          c.info(c.enclosingPosition,
-                 s"magnolia: could not find any direct subtypes of $typeSymbol",
-                 force = true)
+        if (subtypes.isEmpty) c.message(s"could not find any direct subtypes of $typeSymbol")
 
-          c.abort(c.enclosingPosition, "")
-        }
-
-        val subtypesVal: TermName = TermName(c.freshName("subtypes"))
-
-        val typeclasses = for (subType <- subtypes) yield {
+        val typeclasses = subtypes.map { subType =>
           val path = CoproductType(genericType.toString)
           val frame = stack.Frame(path, resultType, assignedName)
           subType -> stack.recurse(frame, appliedType(typeConstructor, subType)) {
@@ -348,36 +366,20 @@ object Magnolia {
           }
         }
 
-        val assignments = typeclasses.zipWithIndex.map {
-          case ((typ, typeclass), idx) =>
-            q"""$subtypesVal($idx) = $magnoliaPkg.Magnolia.subtype[$typeConstructor, $genericType, $typ](
-            $magnoliaPkg.TypeName(${typ.typeSymbol.owner.fullName}, ${typ.typeSymbol.name.decodedName.toString}),
+        val assignments = typeclasses.map { case (typ, typeclass) =>
+          q"""${c.magnoliaObj}.subtype[$typeConstructor, $genericType, $typ](
+            ${c.magnoliaPkg}.TypeName(${typ.typeSymbol.owner.fullName}, ${c.shortName(typ.typeSymbol)}),
             $typeclass,
             (t: $genericType) => t.isInstanceOf[$typ],
             (t: $genericType) => t.asInstanceOf[$typ]
           )"""
         }
 
-        Some(q"""{
-            val $subtypesVal: $scalaPkg.Array[$magnoliaPkg.Subtype[$typeConstructor, $genericType]] =
-              new $scalaPkg.Array(${assignments.size})
-            
-            ..$assignments
-
-            $typeNameDef
-            
-            ${c.prefix}.dispatch(new $magnoliaPkg.SealedTrait(
-              $typeName,
-              $subtypesVal: $scalaPkg.Array[$magnoliaPkg.Subtype[$typeConstructor, $genericType]],
-              $scalaPkg.Array(..$classAnnotationTrees)
-            )): $resultType
-          }""")
+        Some(c.mkSealedTrait(typeConstructor, genericType, classAnnotationTrees, resultType, assignments))
+        
       } else None
 
-      for (term <- result) yield q"""{
-        lazy val $assignedName: $resultType = $term
-        $assignedName
-      }"""
+      result.map { term => q"lazy val $assignedName: $resultType = $term; $assignedName" }
     }
 
     val genericType: Type = weakTypeOf[T]
@@ -388,24 +390,23 @@ object Magnolia {
     val result = stack
       .find(searchType)
       .map { enclosingRef =>
-        q"$magnoliaPkg.Deferred[$searchType](${enclosingRef.toString})"
+        q"${c.magnoliaPkg}.Deferred[$searchType](${enclosingRef.toString})"
       }
       .orElse {
         directInferImplicit(genericType, typeConstructor)
       }
 
-    for (tree <- result) if (debug.isDefined && genericType.toString.contains(debug.get)) {
-      c.echo(c.enclosingPosition, s"Magnolia macro expansion for $genericType")
+    debug.map { search => result.foreach { tree => if (genericType.toString.contains(search)) {
+      c.echo(c.enclosingPosition, s"magnolia: macro expansion for $genericType")
       c.echo(NoPosition, s"... = ${showCode(tree)}\n\n")
-    }
+    } } }
 
     val dereferencedResult =
       if (stack.nonEmpty) result
-      else for (tree <- result) yield c.untypecheck(removeDeferred.transform(tree))
+      else result.map { tree => c.untypecheck(removeDeferred.transform(tree)) }
 
     dereferencedResult.getOrElse {
-      c.abort(c.enclosingPosition,
-              s"magnolia: could not infer $prefixName.Typeclass for type $genericType")
+      c.fail(s"could not infer ${c.prefixName}.Typeclass for type $genericType")
     }
   }
 
@@ -485,7 +486,7 @@ private[magnolia] object CompileTimeState {
     def isEmpty: Boolean = frames.isEmpty
     def nonEmpty: Boolean = frames.nonEmpty
     def top: Option[Frame] = frames.headOption
-    def pop(): Unit = frames = frames drop 1
+    def pop(): Unit = frames = frames.drop(1)
     def push(frame: Frame): Unit = frames ::= frame
 
     def clear(): Unit = {
@@ -529,7 +530,7 @@ private[magnolia] object CompileTimeState {
 
     def withContext(c: whitebox.Context)(fn: Stack[c.type] => c.Tree): c.Tree = {
       workSet += c.macroApplication.symbol
-      val depth = c.enclosingMacros.count(m => workSet(m.macroApplication.symbol))
+      val depth = c.enclosingMacros.count { m => workSet(m.macroApplication.symbol) }
       try fn(global.asInstanceOf[Stack[c.type]])
       finally if (depth <= 1) {
         global.clear()
