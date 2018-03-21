@@ -108,27 +108,26 @@ object Magnolia {
       )
     }(_.typeConstructor)
 
-    def checkMethod(termName: String, category: String, expected: String): Unit = {
-      val term = TermName(termName)
-      val combineClass = c.prefix.tree.tpe.baseClasses
-        .find { cls =>
-          cls.asType.toType.decl(term) != NoSymbol
-        }
-        .getOrElse {
-          c.abort(
-            c.enclosingPosition,
-            s"magnolia: the method `$termName` must be defined on the derivation $prefixObject to derive typeclasses for $category"
-          )
-        }
-      val firstParamBlock = combineClass.asType.toType.decl(term).asTerm.asMethod.paramLists.head
-      if (firstParamBlock.lengthCompare(1) != 0)
-        c.abort(c.enclosingPosition,
-                s"magnolia: the method `combine` should take a single parameter of type $expected")
+
+    def checkMethod(method: String, category: String, expected: String, abort: Boolean): Boolean = {
+      val methodTerm = TermName(method)
+      val declaration = c.prefix.tree.tpe.baseClasses.find(_.asType.toType.decl(methodTerm) != NoSymbol)
+      
+      if(declaration.isEmpty && abort) c.abort(c.enclosingPosition,
+          s"magnolia: the method `$method` must be defined on the derivation $prefixObject to derive typeclasses for $category")
+
+      declaration.map { d =>
+        val correctLength = d.asTerm.asMethod.paramLists.head.length == 0
+        
+        if(!correctLength && abort) c.abort(c.enclosingPosition,
+            s"magnolia: the method `$method` on derivation $prefixObject should take a single parameter of type $expected")
+        
+        correctLength
+      }.getOrElse(false)
     }
 
-    // FIXME: Only run these methods if they're used, particularly `dispatch`
-    checkMethod("combine", "case classes", "CaseClass[Typeclass, _]")
-    checkMethod("dispatch", "sealed traits", "SealedTrait[Typeclass, _]")
+    checkMethod("combine", "case classes", "CaseClass[Typeclass, _]", true)
+    val dispatchDefined = checkMethod("dispatch", "sealed traits", "SealedTrait[Typeclass, _]", false)
 
     val removeDeferred = new Transformer {
       override def transform(tree: Tree) = tree match {
@@ -332,7 +331,7 @@ object Magnolia {
             if (typeclass.repeated) q"$arg: _*" else arg
         }})}))
           }""")
-      } else if (isSealedTrait) {
+      } else if (isSealedTrait && dispatchDefined) {
         val genericSubtypes = classType.get.knownDirectSubclasses.to[List]
         val subtypes = genericSubtypes.map { sub =>
           val subType = sub.asType.toType // FIXME: Broken for path dependent types

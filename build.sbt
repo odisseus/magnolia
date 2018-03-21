@@ -48,7 +48,7 @@ lazy val examplesJVM = examples.jvm
 lazy val examplesJS = examples.js
 lazy val examplesNative = examples.native
 
-lazy val tests = project
+lazy val tests = crossProject(JVMPlatform)
   .in(file("tests"))
   .settings(buildSettings: _*)
   .settings(unmanagedSettings)
@@ -63,10 +63,12 @@ lazy val tests = project
       "com.sun.xml.bind" % "jaxb-impl" % "2.3.0" % "compile"
     )
   )
-  .dependsOn(examplesJVM)
+  .dependsOn(examples)
+
+lazy val testsJVM = tests.jvm
 
 lazy val root = (project in file("."))
-  .aggregate(coreJVM, coreJS, coreNative, examplesJVM, examplesJS, examplesNative, tests)
+  .aggregate(coreJVM, coreJS, coreNative, examplesJVM, examplesJS, examplesNative, testsJVM)
   .settings(
     publish := {},
     publishLocal := {}
