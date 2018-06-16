@@ -1,0 +1,19 @@
+Jon Pretty <jon.pretty@propensive.com>
+Georgi Krastev <joro.kr.21@gmail.com>
+Mathias <mathias@decodified.com>
+Shadaj Laddad <shadaj@users.noreply.github.com>
+Kevin Wright <kevin.wright@bradyplc.com>
+Piotr Krzemiński <pio.krzeminski@gmail.com>
+xuwei-k <6b656e6a69@gmail.com>
+Jakob Odersky <jakob@odersky.com>
+Leandro Bolivar <leandrob131@gmail.com>
+Rui Gonçalves <ruippeixotog@gmail.com>
+Sam Halliday <sam.halliday@gmail.com>
+Denys Shabalin <den.shabalin@gmail.com>
+Julien Tournay <julient@spotify.com>
+Loic Descotte <loic.descotte@gmail.com>
+Matt Dziuban <mrdziuban@gmail.com>
+Rahul Goma Phulore <rahul.phulore.999@gmail.com>
+Seth Tisue <seth@tisue.net>
+The Gitter Badger <badger@gitter.im>
+Vladimir Pavkin <vpavkin@gmail.com>

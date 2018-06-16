@@ -267,7 +267,6 @@ object Magnolia {
 
         val preAssignments = caseParams.map(_.typeclass)
 
-
         val defaults = headParamList map { plist =>
           // note: This causes the namer/typer to generate the synthetic default methods by forcing
           // the typeSignature of the "default" factory method to be visited.
@@ -521,7 +520,7 @@ private[magnolia] object CompileTimeState {
     override def toString: String =
       frames.mkString("magnolia stack:\n", "\n", "\n")
 
-    final case class Frame(path: TypePath, searchType: C#Type, term: C#TermName)
+    case class Frame(path: TypePath, searchType: C#Type, term: C#TermName)
   }
 
   object Stack {
