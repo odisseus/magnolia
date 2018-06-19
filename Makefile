@@ -17,7 +17,13 @@ bin:
 clean:
 	@rm -rf bin
 
-dependencies: probation
+dependencies: probation contextual escritoire
+
+escritoire:
+	@git clone git@github.com:propensive/escritoire.git --branch=fury
+
+contextual:
+	@git clone git@github.com:propensive/contextual.git --branch=fury
 
 probation:
 	@git clone git@github.com:propensive/probation.git --branch=fury

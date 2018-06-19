@@ -1,12 +1,12 @@
 {
     "version" : "1.0.0",
     "project" : {
-        "name" : "magnolia/test",
+        "name" : "contextual/core",
         "directory" : "$PWD",
         "sources" : [
-            "$PWD/src/test"
+            "$PWD/contextual/src/core"
         ],
-        "dependencies" : ["magnolia/examples", "probation/cli", "contextual/data"],
+        "dependencies" : [],
         "classpath" : [
             "$PWD/scala-2.12.6/lib/scala-library.jar", "$PWD/scala-2.12.6/lib/scala-xml_2.12-1.0.6.jar", "$PWD/scala-2.12.6/lib/scala-compiler.jar", "$PWD/scala-2.12.6/lib/scala-reflect.jar", "$PWD/bin/"
         ],
