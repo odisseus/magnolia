@@ -15,7 +15,7 @@
 package magnolia.tests
 
 import language.experimental.macros
-import probation.{TestApp, test}
+import estrapade.{TestApp, test}
 import contextual.data.scalac._
 import contextual.data.fqt._
 import contextual.data.txt._
@@ -58,10 +58,11 @@ case object Blue extends Color
 
 case class MyAnnotation(order: Int) extends StaticAnnotation
 
+sealed trait AttributeParent
 @MyAnnotation(0) case class Attributed(
   @MyAnnotation(1) p1: String,
   @MyAnnotation(2) p2: Int
-)
+) extends AttributeParent
 
 case class `%%`(`/`: Int, `#`: String)
 
@@ -98,16 +99,12 @@ class NotDerivable
 
 case class NoDefault(value: Boolean)
 
-// this should *not* be derived: both ServiceName and Option[String] should fail
-final case class LoggingConfig(
-  name: ServiceName,
-  optName: Option[String]
-)
-object LoggingConfig {
-  implicit val semi: SemiDefault[LoggingConfig] = SemiDefault.gen
-}
+final case class ServiceName1(value: String) extends AnyVal
+final case class ServiceName2(value: String)
 
-final case class ServiceName(value: String) extends AnyVal
+sealed abstract class Halfy
+final case class Lefty() extends Halfy
+final case class Righty() extends Halfy
 
 object Tests extends TestApp {
 
@@ -232,6 +229,43 @@ object Tests extends TestApp {
     }.assert(_ == TypecheckError(txt"""magnolia: could not find Show.Typeclass for type Unit
         |    in parameter 'unit' of product type Gamma
         |"""))
+
+    test("not assume full auto derivation of external value classes") {
+      scalac"""
+        case class LoggingConfig(n: ServiceName1)
+        object LoggingConfig {
+          implicit val semi: SemiDefault[LoggingConfig] = SemiDefault.gen
+        }
+        """
+    }.assert(_ == TypecheckError(txt"""magnolia: could not find SemiDefault.Typeclass for type magnolia.tests.ServiceName1
+    in parameter 'n' of product type LoggingConfig
+""") )
+
+    test("not assume full auto derivation of external products") {
+      scalac"""
+        case class LoggingConfig(n: ServiceName2)
+        object LoggingConfig {
+          implicit val semi: SemiDefault[LoggingConfig] = SemiDefault.gen
+        }
+        """
+    }.assert(_ == TypecheckError(txt"""magnolia: could not find SemiDefault.Typeclass for type magnolia.tests.ServiceName2
+    in parameter 'n' of product type LoggingConfig
+""") )
+
+    test("not assume full auto derivation of external coproducts") {
+      scalac"""
+        case class LoggingConfig(o: Option[String])
+        object LoggingConfig {
+          implicit val semi: SemiDefault[LoggingConfig] = SemiDefault.gen
+        }
+        """
+    }.assert(_ == TypecheckError(txt"""magnolia: could not find SemiDefault.Typeclass for type Option[String]
+    in parameter 'o' of product type LoggingConfig
+""") )
+
+    test("half auto derivation of sealed families") {
+      SemiDefault.gen[Halfy].default
+    }.assert(_ == Lefty())
 
     test("typenames and labels are not encoded") {
       implicitly[Show[String, `%%`]].show(`%%`(1, "two"))
@@ -406,6 +440,10 @@ object Tests extends TestApp {
       Show.gen[Attributed].show(Attributed("xyz", 100))
     }.assert(_ == "Attributed{MyAnnotation(0)}(p1{MyAnnotation(1)}=xyz,p2{MyAnnotation(2)}=100)")
 
+    test("capture attributes against subtypes") {
+      Show.gen[AttributeParent].show(Attributed("xyz", 100))
+    }.assert(_ == "[MyAnnotation(0)]Attributed{MyAnnotation(0)}(p1{MyAnnotation(1)}=xyz,p2{MyAnnotation(2)}=100)")
+
     test("show underivable type with fallback") {
       TypeNameInfo.gen[NotDerivable].name
     }.assert(_ == TypeName("", "Unknown Type"))
@@ -415,7 +453,7 @@ object Tests extends TestApp {
         WeakHash.gen[Person]
       """
     }.assert(_ == Returns(fqt"magnolia.examples.WeakHash[magnolia.tests.Person]"))
-    
+
     test("disallow coproduct derivations without dispatch method") {
       scalac"""
         WeakHash.gen[Entity]

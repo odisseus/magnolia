@@ -20,15 +20,28 @@ import scala.language.experimental.macros
 /** typeclass for providing a default value for a particular type */
 trait Default[T] { def default: Either[String, T] }
 
+
+case class Foo(x: Int, y: String)
+
+
+
 /** companion object and derivation object for [[Default]] */
 object Default {
 
-  type Typeclass[T] = Default[T]
+  val myFoo = Foo(1, "two")
+
+  type Typeclass[X] = Default[X]
 
   /** constructs a default for each parameter, using the constructor default (if provided),
     *  otherwise using a typeclass-provided default */
   def combine[T](ctx: CaseClass[Default, T]): Default[T] = new Default[T] {
-    def default = ctx.constructEither { param =>
+    def default = ctx.parameters.map { param =>
+      type PType = param.PType
+      param.typeclass: Default[param.PType]
+    }
+    
+    
+    ctx.constructEither { param =>
       param.default match {
         case Some(arg) => Right(arg)
         case None => param.typeclass.default
