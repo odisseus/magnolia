@@ -244,10 +244,10 @@ final class SealedTrait[Typeclass[_], Type](
 }
 
 /**
-  * Provides the different parts of a type's class name.
+  * Provides the different parts of a type's name.
   */
-final case class TypeName(owner: String, short: String) {
-  def full: String = s"$owner.$short"
+final case class TypeName(owner: String, short: String, typeArguments: Seq[TypeName]) {
+  val full: String = s"$owner.$short"
 }
 
 /**

@@ -16,6 +16,7 @@ package magnolia
 
 import scala.annotation.compileTimeOnly
 import scala.collection.mutable
+import scala.language.existentials
 import scala.language.higherKinds
 import scala.reflect.macros._
 import mercator._
@@ -204,6 +205,12 @@ object Magnolia {
       val isCaseObject = classType.exists(_.isModuleClass)
       val isSealedTrait = classType.exists(_.isSealed)
 
+      val hasPrivateContructor =
+        genericType.decls.collectFirst {
+          case m: MethodSymbol if m.isConstructor =>
+            m.isPrivate
+      }.getOrElse(false)
+
       val classAnnotationTrees = typeSymbol.annotations.map(_.tree)
 
       val primitives = Set(typeOf[Double],
@@ -221,12 +228,16 @@ object Magnolia {
       val resultType = appliedType(typeConstructor, genericType)
 
       val typeName = TermName(c.freshName("typeName"))
-      val typeNameDef = {
-        val ts = genericType.typeSymbol
-        q"val $typeName = $magnoliaPkg.TypeName(${ts.owner.fullName}, ${ts.name.decodedName.toString})"
+
+      def typeNameRec(t: Type): Tree = {
+        val ts = t.typeSymbol
+        val typeArgNames = t.typeArgs.map(typeNameRec(_))
+        q"$magnoliaPkg.TypeName(${ts.owner.fullName}, ${ts.name.decodedName.toString}, $typeArgNames)"
       }
+      val typeNameDef = q"val $typeName = ${typeNameRec(genericType)}"
 
       val result = if (isCaseObject) {
+        val f = TypeName(c.freshName("F"))
         val impl = q"""
           $typeNameDef
           ${c.prefix}.combine(new $magnoliaPkg.CaseClass[$typeConstructor, $genericType](
@@ -239,8 +250,7 @@ object Magnolia {
             override def construct[Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => Return): $genericType =
               ${genericType.typeSymbol.asClass.module}
 
-            import _root_.scala.language.higherKinds
-            def constructMonadic[F[_], Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => F[Return])(implicit monadic: _root_.mercator.Monadic[F]): F[$genericType] =
+            def constructMonadic[$f[_], Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => $f[Return])(implicit monadic: _root_.mercator.Monadic[$f]): $f[$genericType] =
               monadic.point(${genericType.typeSymbol.asClass.module})
 
             def rawConstruct(fieldValues: _root_.scala.Seq[_root_.scala.Any]): $genericType =
@@ -248,7 +258,7 @@ object Magnolia {
           })
         """
         Some(impl)
-      } else if (isCaseClass || isValueClass) {
+      } else if ((isCaseClass || isValueClass) && !hasPrivateContructor) {
 
         val companionRef = GlobalUtil.patchedCompanionRef(c)(genericType.dealias)
 
@@ -344,23 +354,25 @@ object Magnolia {
             $scalaPkg.Array(..$annList)
           )"""
         }
-        
+
         val genericParams = caseParams.zipWithIndex.map { case (typeclass, idx) =>
           val arg = q"makeParam($paramsVal($idx)).asInstanceOf[${typeclass.paramType}]"
           if(typeclass.repeated) q"$arg: _*" else arg
         }
-        
+
         val rawGenericParams = caseParams.zipWithIndex.map { case (typeclass, idx) =>
           val arg = q"fieldValues($idx).asInstanceOf[${typeclass.paramType}]"
           if(typeclass.repeated) q"$arg: _*" else arg
         }
-        
+
+        val f = TypeName(c.freshName("F"))
+
         val forParams = caseParams.zipWithIndex.map { case (typeclass, idx) =>
           val part = TermName(s"p$idx")
-          (if(typeclass.repeated) q"$part: _*" else q"$part", fq"$part <- new _root_.mercator.Ops(makeParam($paramsVal($idx)).asInstanceOf[F[${typeclass.paramType}]])")
+          (if(typeclass.repeated) q"$part: _*" else q"$part", fq"$part <- new _root_.mercator.Ops(makeParam($paramsVal($idx)).asInstanceOf[$f[${typeclass.paramType}]])")
         }
-       
-        val constructMonadicImpl = if(forParams.length == 0) q"monadic.point(new $genericType())" else q"""
+
+        val constructMonadicImpl = if (forParams.isEmpty) q"monadic.point(new $genericType())" else q"""
           for(
             ..${forParams.map(_._2)}
           ) yield new $genericType(..${forParams.map(_._1)})
@@ -384,8 +396,7 @@ object Magnolia {
               override def construct[Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => Return): $genericType =
                 new $genericType(..$genericParams)
 
-              import _root_.scala.language.higherKinds
-              def constructMonadic[F[_], Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => F[Return])(implicit monadic: _root_.mercator.Monadic[F]): F[$genericType] = {
+              def constructMonadic[$f[_], Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => $f[Return])(implicit monadic: _root_.mercator.Monadic[$f]):$f[$genericType] = {
                 $constructMonadicImpl
               }
 
@@ -429,7 +440,7 @@ object Magnolia {
         val assignments = typeclasses.zipWithIndex.map {
           case ((typ, typeclass), idx) =>
             q"""$subtypesVal($idx) = $magnoliaPkg.Magnolia.subtype[$typeConstructor, $genericType, $typ](
-            $magnoliaPkg.TypeName(${typ.typeSymbol.owner.fullName}, ${typ.typeSymbol.name.decodedName.toString}),
+            ${typeNameRec(typ)},
             $idx,
             $scalaPkg.Array(..${typ.typeSymbol.annotations.map(_.tree)}),
             _root_.magnolia.CallByNeed($typeclass),
@@ -633,7 +644,7 @@ private[magnolia] object CompileTimeState {
 }
 
 object CallByNeed { def apply[A](a: => A): CallByNeed[A] = new CallByNeed(() => a) }
-final class CallByNeed[+A](private[this] var eval: () => A) {
+final class CallByNeed[+A](private[this] var eval: () => A) extends Serializable {
   lazy val value: A = {
     val result = eval()
     eval = null

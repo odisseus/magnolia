@@ -1,4 +1,4 @@
-/* Magnolia, version 0.7.1. Copyright 2018 Jon Pretty, Propensive Ltd.
+/* Magnolia, version 0.10.0. Copyright 2018 Jon Pretty, Propensive Ltd.
  *
  * The primary distribution site is: http://co.ntextu.al/
  *
@@ -29,7 +29,7 @@ object TypeNameInfo {
     new TypeNameInfo[T] { def name: TypeName = ctx.typeName }
 
   def fallback[T]: TypeNameInfo[T] =
-    new TypeNameInfo[T] { def name: TypeName = TypeName("", "Unknown Type") }
+    new TypeNameInfo[T] { def name: TypeName = TypeName("", "Unknown Type", Seq.empty) }
 
   implicit def gen[T]: TypeNameInfo[T] = macro Magnolia.gen[T]
 }

@@ -15,7 +15,8 @@
 package magnolia.tests
 
 import language.experimental.macros
-import estrapade.{TestApp, test}
+import language.higherKinds
+import probably.{TestApp, test}
 import contextual.data.scalac._
 import contextual.data.fqt._
 import contextual.data.txt._
@@ -123,7 +124,7 @@ object Tests extends TestApp {
 
     test("serialize a Branch") {
       implicitly[Show[String, Branch[String]]].show(Branch(Leaf("LHS"), Leaf("RHS")))
-    }.assert(_ == "Branch(left=Leaf(value=LHS),right=Leaf(value=RHS))")
+    }.assert(_ == "Branch[String](left=Leaf[String](value=LHS),right=Leaf[String](value=RHS))")
 
     test("local implicit beats Magnolia") {
       implicit val showPerson: Show[String, Person] = new Show[String, Person] {
@@ -161,7 +162,7 @@ object Tests extends TestApp {
     }.assert(_ == true)
 
     test("construct a default value") {
-      Default.gen[Entity].default
+      HasDefault.gen[Entity].defaultValue
     }.assert(_ == Right(Company("")))
 
     test("construction of Show instance for Leaf") {
@@ -178,18 +179,18 @@ object Tests extends TestApp {
 
     test("serialize a Leaf") {
       implicitly[Show[String, Leaf[String]]].show(Leaf("testing"))
-    }.assert(_ == "Leaf(value=testing)")
+    }.assert(_ == "Leaf[String](value=testing)")
 
     test("serialize a Branch as a Tree") {
       implicitly[Show[String, Tree[String]]].show(Branch(Leaf("LHS"), Leaf("RHS")))
-    }.assert(_ == "Branch(left=Leaf(value=LHS),right=Leaf(value=RHS))")
+    }.assert(_ == "Branch[String](left=Leaf[String](value=LHS),right=Leaf[String](value=RHS))")
 
     test("serialize case object") {
       implicitly[Show[String, Red.type]].show(Red)
     }.assert(_ == "Red()")
 
     test("access default constructor values") {
-      implicitly[Default[Item]].default
+      implicitly[HasDefault[Item]].defaultValue
     }.assert(_ == Right(Item("", 1, 0)))
 
     test("serialize case object as a sealed trait") {
@@ -277,7 +278,7 @@ object Tests extends TestApp {
 
     test("serialize a tuple") {
       tupleDerivation().show((42, "Hello World"))
-    }.assert(_ == "Tuple2(_1=42,_2=Hello World)")
+    }.assert(_ == "Tuple2[Int,String](_1=42,_2=Hello World)")
 
     test("serialize a value class") {
       Show.gen[Length].show(new Length(100))
@@ -286,7 +287,7 @@ object Tests extends TestApp {
     // Corrupt being covariant in L <: Seq[Company] enables the derivation for Corrupt[String, _]
     test("show a Politician with covariant lobby") {
       Show.gen[Politician[String]].show(Corrupt("wall", Seq(Company("Alice Inc"))))
-    }.assert(_ == "Corrupt(slogan=wall,lobby=[Company(name=Alice Inc)])")
+    }.assert(_ == "Corrupt[String,Seq[Company]](slogan=wall,lobby=[Company(name=Alice Inc)])")
 
     // LabelledBox being invariant in L <: String prohibits the derivation for LabelledBox[Int, _]
     test("can't show a Box with invariant label") {
@@ -346,7 +347,7 @@ object Tests extends TestApp {
         }.assert(_ == "InnerClass(name=foo)")
 
         test("construct a default case class inside another class") {
-          Default.gen[InnerClassWithDefault].default
+          HasDefault.gen[InnerClassWithDefault].defaultValue
         }.assert(_ == Right(InnerClassWithDefault()))
 
         ()
@@ -361,7 +362,7 @@ object Tests extends TestApp {
         }.assert(_ == "LocalClass(name=foo)")
 
         test("construct a default case class inside a method") {
-          Default.gen[LocalClassWithDefault].default
+          HasDefault.gen[LocalClassWithDefault].defaultValue
         }.assert(_ == Right(LocalClassWithDefault()))
 
         ()
@@ -377,11 +378,11 @@ object Tests extends TestApp {
     }.assert(_ == "Account(id=john_doe,emails=[john.doe@yahoo.com,john.doe@gmail.com])")
 
     test("construct a default Account") {
-      Default.gen[Account].default
+      HasDefault.gen[Account].defaultValue
     }.assert(_ == Right(Account("")))
 
     test("construct a failed NoDefault") {
-      Default.gen[NoDefault].default
+      HasDefault.gen[NoDefault].defaultValue
     }.assert(_ == Left("truth is a lie"))
 
     test("show a Portfolio of Companies") {
@@ -390,7 +391,7 @@ object Tests extends TestApp {
 
     test("show a List[Int]") {
       Show.gen[List[Int]].show(List(1, 2, 3))
-    }.assert(_ == "::(head=1,tl$access$1=::(head=2,tl$access$1=::(head=3,tl$access$1=Nil())))")
+    }.assert(_ == "::[Int](head=1,tl$access$1=::[Int](head=2,tl$access$1=::[Int](head=3,tl$access$1=Nil())))")
 
     test("sealed trait typeName should be complete and unchanged") {
       TypeNameInfo.gen[Color].name
@@ -430,11 +431,11 @@ object Tests extends TestApp {
     test("dependencies between derived type classes") {
       implicit def showDefaultOption[A](
         implicit showA: Show[String, A],
-        defaultA: Default[A]
-      ): Show[String, Option[A]] = (optA: Option[A]) => showA.show(optA.getOrElse(defaultA.default.right.get))
+        defaultA: HasDefault[A]
+      ): Show[String, Option[A]] = (optA: Option[A]) => showA.show(optA.getOrElse(defaultA.defaultValue.right.get))
 
       Show.gen[Path[String]].show(OffRoad(Some(Crossroad(Destination("A"), Destination("B")))))
-    }.assert(_ == "OffRoad(path=Crossroad(left=Destination(value=A),right=Destination(value=B)))")
+    }.assert(_ == "OffRoad[String](path=Crossroad[String](left=Destination[String](value=A),right=Destination[String](value=B)))")
 
     test("capture attributes against params") {
       Show.gen[Attributed].show(Attributed("xyz", 100))
@@ -442,11 +443,11 @@ object Tests extends TestApp {
 
     test("capture attributes against subtypes") {
       Show.gen[AttributeParent].show(Attributed("xyz", 100))
-    }.assert(_ == "[MyAnnotation(0)]Attributed{MyAnnotation(0)}(p1{MyAnnotation(1)}=xyz,p2{MyAnnotation(2)}=100)")
+    }.assert(_ == "{MyAnnotation(0)}Attributed{MyAnnotation(0)}(p1{MyAnnotation(1)}=xyz,p2{MyAnnotation(2)}=100)")
 
     test("show underivable type with fallback") {
       TypeNameInfo.gen[NotDerivable].name
-    }.assert(_ == TypeName("", "Unknown Type"))
+    }.assert(_ == TypeName("", "Unknown Type", Seq.empty))
 
     test("allow no-coproduct derivation definitions") {
       scalac"""
