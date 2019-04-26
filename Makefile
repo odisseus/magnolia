@@ -1,5 +1,6 @@
 PROJECT = magnolia
 DEPENDENCIES = lib/mercator.jar
+MODULES = core
 
 $(PROJECT).jar: compile
 	jar -cf $(PROJECT).jar -C bin $(PROJECT)
@@ -12,6 +13,6 @@ lib/%.jar:
 compile: $(DEPENDENCIES)
 	@scalac -version | grep 'version 2\.12\.' > /dev/null || echo "scalac is not version 2.12.x"
 	mkdir -p bin
-	scalac -unchecked -feature -d bin -cp lib/'*' src/core/*.scala
+	$(foreach MODULE,$(MODULES),scalac -unchecked -feature -d bin -cp bin:lib/'*' src/$(MODULE)/*.scala)
 
 .PHONY: compile
