@@ -2,13 +2,15 @@ PROJECT = magnolia
 DEPENDENCIES = lib/mercator.jar
 MODULES = core
 
-$(PROJECT).jar: compile
-	jar -cf $(PROJECT).jar -C bin $(PROJECT)
+lib/$(PROJECT).jar: lib compile
+	jar -cf lib/$(PROJECT).jar -C bin $(PROJECT)
 
-lib/%.jar:
-	mkdir -p lib
+lib/%.jar: lib
 	cd $* && make
-	for JAR in $(find $* -name '*.jar'); do cp $(JAR) lib/; done
+	cp $*/lib/*.jar lib/
+
+lib:
+	mkdir -p lib
 
 compile: $(DEPENDENCIES)
 	@scalac -version | grep 'version 2\.12\.' > /dev/null || echo "scalac is not version 2.12.x"
