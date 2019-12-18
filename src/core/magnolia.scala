@@ -95,6 +95,7 @@ object Magnolia {
 
     val repeatedParamClass = definitions.RepeatedParamClass
     val scalaSeqType = typeOf[Seq[_]].typeConstructor
+    val javaAnnotationType = typeOf[java.lang.annotation.Annotation]
 
     val prefixType = c.prefix.tree.tpe
     val prefixObject = prefixType.typeSymbol
@@ -124,14 +125,15 @@ object Magnolia {
       .filter(encl => encl.isVal || encl.isLazy)
       .toSet[Symbol]
 
-    def knownSubclasses(sym: ClassSymbol): List[Symbol] = {
-      val children = sym.knownDirectSubclasses.toList
+    def knownSubclasses(sym: ClassSymbol): Set[Symbol] = {
+      val children = sym.knownDirectSubclasses
       val (abstractTypes, concreteTypes) = children.partition(_.isAbstract)
-      abstractTypes.map(_.asClass).flatMap(knownSubclasses(_)) ::: concreteTypes
+      abstractTypes.map(_.asClass).flatMap(knownSubclasses(_)) ++ concreteTypes
     }
 
-    def annotationsOf(symbol: Symbol): List[Tree] =
-      symbol.annotations.map(_.tree).filterNot(_.tpe.typeSymbol.isJavaAnnotation)
+    def annotationsOf(symbol: Symbol): List[Tree] = {
+      symbol.annotations.map(_.tree).filterNot(_.tpe <:< javaAnnotationType)
+    }
 
     val typeDefs = prefixType.baseClasses.flatMap { cls =>
       cls.asType.toType.decls.filter(_.isType).find(_.name.toString == "Typeclass").map { tpe =>
@@ -265,6 +267,9 @@ object Magnolia {
             def constructMonadic[$f[_], Return](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => $f[Return])(implicit monadic: _root_.mercator.Monadic[$f]): $f[$genericType] =
               monadic.point(${genericType.typeSymbol.asClass.module})
 
+            def constructEither[Err, PType](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => _root_.scala.Either[Err, PType]): _root_.scala.Either[_root_.scala.List[Err], $genericType] =
+              _root_.scala.Right(${genericType.typeSymbol.asClass.module})
+
             def rawConstruct(fieldValues: _root_.scala.Seq[_root_.scala.Any]): $genericType =
               ${genericType.typeSymbol.asClass.module}
           })
@@ -382,6 +387,38 @@ object Magnolia {
           ) yield new $genericType(..${forParams.map(_._1)})
         """
 
+        val constructEitherImpl =
+          if (caseParams.isEmpty) q"_root_.scala.Right(new $genericType())"
+          else {
+            val eitherVals = caseParams.zipWithIndex.map {
+              case (typeclass, idx) =>
+                val part = TermName(s"p$idx")
+                val pat = TermName(s"v$idx")
+                (
+                  part,
+                  if (typeclass.repeated) q"$pat: _*" else q"$pat",
+                  q"val $part = makeParam($paramsVal($idx)).asInstanceOf[_root_.scala.Either[Err, ${typeclass.paramType}]]",
+                  pq"_root_.scala.Right($pat)",
+                )
+            }
+
+            // DESNOTE(2019-12-05, pjrt): Due to limits on tuple sizes, and lack of <*>, we split the params
+            // into a list of tuples of at most 22 in size
+            val limited = eitherVals.grouped(22).toList
+
+          q"""
+           ..${eitherVals.map(_._3)}
+           (..${limited.map(k => q"(..${k.map(_._1)})")}) match {
+             case (..${limited.map(k => q"(..${k.map(_._4)})")}) =>
+               _root_.scala.Right(new $genericType(..${eitherVals.map(_._2)}))
+             case _ =>
+               _root_.scala.Left(
+                 $magnoliaPkg.Magnolia.keepLeft(..${eitherVals.map(_._1)})
+               )
+           }
+         """
+        }
+
         Some(q"""{
             ..$preAssignments
             val $paramsVal: $scalaPkg.Array[$magnoliaPkg.Param[$typeConstructor, $genericType]] =
@@ -404,6 +441,10 @@ object Magnolia {
                 $constructMonadicImpl
               }
 
+              def constructEither[Err, PType](makeParam: _root_.magnolia.Param[$typeConstructor, $genericType] => _root_.scala.Either[Err, PType]): _root_.scala.Either[_root_.scala.List[Err], $genericType] = {
+                $constructEitherImpl
+              }
+
               def rawConstruct(fieldValues: _root_.scala.Seq[_root_.scala.Any]): $genericType = {
                 $magnoliaPkg.Magnolia.checkParamLengths(fieldValues, $paramsVal.length, $typeName.full)
                 new $genericType(..$rawGenericParams)
@@ -412,7 +453,7 @@ object Magnolia {
           }""")
       } else if (isSealedTrait) {
         checkMethod("dispatch", "sealed traits", "SealedTrait[Typeclass, _]")
-        val genericSubtypes = knownSubclasses(classType.get)
+        val genericSubtypes = knownSubclasses(classType.get).toList.sortBy(_.fullName)
         val subtypes = genericSubtypes.map { sub =>
           val subType = sub.asType.toType // FIXME: Broken for path dependent types
           val typeParams = sub.asType.typeParams
@@ -568,6 +609,10 @@ object Magnolia {
       val msg = "`" + typeName + "` has " + paramsLength + " fields, not " + fieldValues.size
       throw new java.lang.IllegalArgumentException(msg)
     }
+
+  final def keepLeft[A, B](values: Either[A, B]*): List[A] =
+    values.toList.collect { case Left(v) => v }
+
 }
 
 private[magnolia] final case class DirectlyReentrantException()

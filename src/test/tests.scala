@@ -16,12 +16,14 @@ package magnolia.tests
 
 import language.experimental.macros
 import language.higherKinds
-import probably.{TestApp, test}
+import estrapade.{TestApp, test}
 import contextual.data.scalac._
 import contextual.data.fqt._
 import contextual.data.txt._
 import magnolia.examples._
 import magnolia.TypeName
+
+import java.time.LocalDate
 
 import scala.annotation.StaticAnnotation
 import scala.util.control.NonFatal
@@ -56,6 +58,8 @@ sealed trait Color
 case object Red extends Color
 case object Green extends Color
 case object Blue extends Color
+case object Orange extends Color
+case object Pink extends Color
 
 case class MyAnnotation(order: Int) extends StaticAnnotation
 
@@ -106,6 +110,66 @@ final case class ServiceName2(value: String)
 sealed abstract class Halfy
 final case class Lefty() extends Halfy
 final case class Righty() extends Halfy
+
+@MyAnnotation(0)
+@javax.annotation.Resource
+@JavaExampleAnnotation(description = "Some model")
+case class MyDto(foo: String, bar: Int)
+
+@SerialVersionUID(42) case class Schedule(events: Seq[Event])
+case class Event(date: LocalDate)
+
+case class RPerson(age: Int, name: String, children: Seq[RPerson])
+case class GPerson(children: Seq[RPerson])
+
+case class ProtectedCons protected (name: String)
+object ProtectedCons {
+  def apply(firstName: String, familyName: String): ProtectedCons =
+    new ProtectedCons(firstName + " " + familyName)
+  implicit val show: Show[String, ProtectedCons] = Show.gen
+}
+
+case class PrivateCons private (name: String)
+object PrivateCons {
+  def apply(firstName: String, familyName: String): PrivateCons =
+    new PrivateCons(firstName + " " + familyName)
+  implicit val show: Show[String, PrivateCons] = Show.gen
+}
+
+class PrivateValueClass private (val value: Int) extends AnyVal
+object PrivateValueClass {
+  def apply(l: Int) = new PrivateValueClass(l)
+  implicit val show: Show[String, PrivateValueClass] = Show.gen
+}
+
+case class KArray(value: List[KArray])
+case class Wrapper(v: Option[KArray])
+
+case class VeryLong(
+  p1: String,
+  p2: String,
+  p3: String,
+  p4: String,
+  p5: String,
+  p6: String,
+  p7: String,
+  p8: String,
+  p9: String,
+  p10: String,
+  p11: String,
+  p12: String,
+  p13: String,
+  p14: String,
+  p15: String,
+  p16: String,
+  p17: String,
+  p18: String,
+  p19: String,
+  p20: String,
+  p21: String,
+  p22: String,
+  p23: String
+)
 
 object Tests extends TestApp {
 
@@ -189,6 +253,10 @@ object Tests extends TestApp {
       implicitly[Show[String, Red.type]].show(Red)
     }.assert(_ == "Red()")
 
+    test("serialize self recursive type") {
+      implicitly[Show[String, GPerson]].show(GPerson(Nil))
+    }.assert(_ == "GPerson(children=[])")
+
     test("access default constructor values") {
       implicitly[HasDefault[Item]].defaultValue
     }.assert(_ == Right(Item("", 1, 0)))
@@ -196,6 +264,18 @@ object Tests extends TestApp {
     test("serialize case object as a sealed trait") {
       implicitly[Show[String, Color]].show(Blue)
     }.assert(_ == "Blue()")
+
+    test("serialize case class with protected constructor") {
+      ProtectedCons.show.show(ProtectedCons("dada", "phil"))
+    }.assert(_ == "ProtectedCons(name=dada phil)")
+
+    test("serialize case class with private constructor") {
+      PrivateCons.show.show(PrivateCons("dada", "phil"))
+    }.assert(_ == "PrivateCons(name=dada phil)")
+
+    test("serialize value case class with private constructor") {
+      PrivateValueClass.show.show(PrivateValueClass(42))
+    }.assert(_ == "42")
 
     test("decode a company") {
       Decoder.gen[Company].decode("""Company(name=Acme Inc)""")
@@ -221,6 +301,14 @@ object Tests extends TestApp {
         |    in parameter 'integer' of product type Alpha
         |    in parameter 'alpha' of product type Beta
         |"""))
+
+    test("serialize case class with Java annotations by skipping them") {
+      Show.gen[MyDto].show(MyDto("foo", 42))
+    }.assert(_ == "MyDto{MyAnnotation(0)}(foo=foo,bar=42)")
+
+    test("serialize case class with Java annotations which comes from external module by skipping them") {
+      Show.gen[JavaAnnotatedCase].show(JavaAnnotatedCase(1))
+    }.assert(_ == "MyDto{MyAnnotation(0)}(foo=foo,bar=42)")
 
     test("not attempt to instantiate Unit when producing error stack") {
       scalac"""
@@ -397,9 +485,15 @@ object Tests extends TestApp {
       TypeNameInfo.gen[Color].name
     }.assert(_.full == "magnolia.tests.Color")
 
+    test("sealed trait subtypes should be ordered") {
+      TypeNameInfo.gen[Color].subtypeNames
+    }.assert(_.map(_.short) == Seq("Blue", "Green", "Orange", "Pink", "Red"))
+
     test("case class typeName should be complete and unchanged") {
       implicit val stringTypeName: TypeNameInfo[String] = new TypeNameInfo[String] {
         def name = ???
+
+        def subtypeNames = ???
       }
       TypeNameInfo.gen[Fruit].name
     }.assert(_.full == "magnolia.tests.Fruit")
@@ -413,6 +507,16 @@ object Tests extends TestApp {
         |    in chained implicit Show.Typeclass for type Seq[(Long, String)]
         |    in parameter '_2' of product type (Int, Seq[(Long, String)])
         |""") }
+
+    test("show chained error stack when leaf instance is missing") {
+      scalac"""Show.gen[Schedule]"""
+    } assert { //
+      _ == TypecheckError(txt"""magnolia: could not find Show.Typeclass for type java.time.LocalDate
+        |    in parameter 'date' of product type magnolia.tests.Event
+        |    in chained implicit Show.Typeclass for type Seq[magnolia.tests.Event]
+        |    in parameter 'events' of product type magnolia.tests.Schedule
+        |""")
+    }
 
     test("show a recursive case class") {
       Show.gen[Recursive].show(Recursive(Seq(Recursive(Nil))))
@@ -460,5 +564,37 @@ object Tests extends TestApp {
         WeakHash.gen[Entity]
       """
     }.assert(_ == TypecheckError("magnolia: the method `dispatch` must be defined on the derivation object WeakHash to derive typeclasses for sealed traits"))
+
+    test("equality of Wrapper") {
+      Eq.gen[Wrapper].equal(Wrapper(Some(KArray(KArray(Nil) :: Nil))), Wrapper(Some(KArray(KArray(Nil) :: KArray(Nil) :: Nil))))
+    }.assert(_ == false)
+
+    test("very long") {
+      val vl =
+        VeryLong("p1",
+                 "p2",
+                 "p3",
+                 "p4",
+                 "p5",
+                 "p6",
+                 "p7",
+                 "p8",
+                 "p9",
+                 "p10",
+                 "p11",
+                 "p12",
+                 "p13",
+                 "p14",
+                 "p15",
+                 "p16",
+                 "p17",
+                 "p18",
+                 "p19",
+                 "p20",
+                 "p21",
+                 "p22",
+                 "p23")
+      Eq.gen[VeryLong].equal(vl, vl)
+    }.assert(_ == true)
   }
 }
