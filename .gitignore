@@ -1,7 +1,4 @@
-target
-.jvm
-.js
-.native
-.idea
-bin
-.bloop-config
+.bloop
+.bsp
+.fury
+.done
