@@ -2,3 +2,6 @@
 	path = mercator
 	url = https://github.com/propensive/mercator.git
   branch = fury
+[submodule ".admin"]
+	path = .admin
+	url = git@github.com:propensive/admin
