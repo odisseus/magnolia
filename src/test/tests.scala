@@ -15,7 +15,6 @@
 package magnolia.tests
 
 import language.experimental.macros
-import language.higherKinds
 import estrapade.{TestApp, test}
 import contextual.data.scalac._
 import contextual.data.fqt._
@@ -112,7 +111,7 @@ final case class Lefty() extends Halfy
 final case class Righty() extends Halfy
 
 @MyAnnotation(0)
-@javax.annotation.Resource
+@SuppressWarnings(Array("deprecation"))
 @JavaExampleAnnotation(description = "Some model")
 case class MyDto(foo: String, bar: Int)
 
@@ -171,6 +170,40 @@ case class VeryLong(
   p23: String
 )
 
+case class Character(id: Character.Id)
+object Character {
+  trait Tag extends Any
+  type Id = Long with Tag
+}
+
+case class AnotherCharacter(id: AnotherCharacter.Id)
+object AnotherCharacter {
+  trait Tag extends Any
+  type Id = Long with Tag
+
+  implicit val idShow: Show[String, Id] = _.toString
+}
+
+final case class Abc(
+  private val a: Int,
+  private val b: Long,
+  c: String
+)
+
+sealed trait Covariant[+A]
+sealed trait Contravariant[-A]
+sealed trait Exactly[A] extends Covariant[A] with Contravariant[A]
+
+object Exactly {
+  case object Any extends Exactly[Any]
+  case class Custom[A](value: A) extends Exactly[A]
+  case object Int extends Exactly[Int]
+  case object Nothing extends Exactly[Nothing]
+  case object String extends Exactly[String]
+}
+
+case class ParamsWithDefault(a: Int = 3, b: Int = 4)
+
 object Tests extends TestApp {
 
   def tests(): Unit = for (_ <- 1 to 1) {
@@ -185,6 +218,20 @@ object Tests extends TestApp {
     test("construct a Show coproduct instance") {
       Show.gen[Person].show(Person("John Smith", 34))
     }.assert(_ == "Person(name=John Smith,age=34)")
+
+    test("construct a Show instance for product with partially private fields") {
+      implicit val showLong: Show[String, Long] = _.toString
+      Show.gen[Abc].show(Abc(12, 54L, "pm"))
+    }.assert(_ == "Abc(a=12,b=54,c=pm)")
+
+    test("construct a Show instance for value case class") {
+      Show.gen[ServiceName1].show(ServiceName1("service"))
+    }.assert(_ == "service")
+
+    test("construct a Show instance for product with multiple default values") {
+      implicit val showLong: Show[String, Long] = _.toString
+      Show.gen[ParamsWithDefault].show(ParamsWithDefault())
+    }.assert(_ == "ParamsWithDefault(a=3,b=4)")
 
     test("serialize a Branch") {
       implicitly[Show[String, Branch[String]]].show(Branch(Leaf("LHS"), Leaf("RHS")))
@@ -269,13 +316,25 @@ object Tests extends TestApp {
       ProtectedCons.show.show(ProtectedCons("dada", "phil"))
     }.assert(_ == "ProtectedCons(name=dada phil)")
 
-    test("serialize case class with private constructor") {
+    test("serialize case class with accessible private constructor") {
       PrivateCons.show.show(PrivateCons("dada", "phil"))
     }.assert(_ == "PrivateCons(name=dada phil)")
 
-    test("serialize value case class with private constructor") {
+    test("serialize value case class with accessible private constructor") {
       PrivateValueClass.show.show(PrivateValueClass(42))
     }.assert(_ == "42")
+
+    test("read-only typeclass can serialize case class with inaccessible private constructor") {
+      implicitly[Print[PrivateCons]].print(PrivateCons("dada", "phil"))
+    }.assert(_ == "PrivateCons(dada phil)")
+
+    test("read-only typeclass can serialize value case class with inaccessible private constructor") {
+      implicitly[Print[PrivateValueClass]].print(PrivateValueClass(42))
+    }.assert(_ == "42")
+
+    test("read-only typeclass can serialize case class with protected constructor") {
+      implicitly[Print[ProtectedCons]].print(ProtectedCons("dada", "phil"))
+    }.assert(_ == "ProtectedCons(dada phil)")
 
     test("decode a company") {
       Decoder.gen[Company].decode("""Company(name=Acme Inc)""")
@@ -308,7 +367,7 @@ object Tests extends TestApp {
 
     test("serialize case class with Java annotations which comes from external module by skipping them") {
       Show.gen[JavaAnnotatedCase].show(JavaAnnotatedCase(1))
-    }.assert(_ == "MyDto{MyAnnotation(0)}(foo=foo,bar=42)")
+    }.assert(_ == "JavaAnnotatedCase(v=1)")
 
     test("not attempt to instantiate Unit when producing error stack") {
       scalac"""
@@ -421,8 +480,8 @@ object Tests extends TestApp {
         case NonFatal(e) => e.getMessage
       }
     }.assert{x =>
-      //tiny hack because Java 9 inserts the "java.base/" module name in the error message
-      x.startsWith("scala.Symbol cannot be cast to") && x.endsWith("java.lang.Integer")
+      // Tiny hack because different Java versions have different error messages.
+      x.contains("scala.Symbol cannot be cast to") && x.contains("java.lang.Integer")
     }
 
     class ParentClass {
@@ -479,7 +538,7 @@ object Tests extends TestApp {
 
     test("show a List[Int]") {
       Show.gen[List[Int]].show(List(1, 2, 3))
-    }.assert(_ == "::[Int](head=1,tl$access$1=::[Int](head=2,tl$access$1=::[Int](head=3,tl$access$1=Nil())))")
+    }.assert(_ == "::[Int](head=1,tl=::[Int](head=2,tl=::[Int](head=3,tl=Nil())))")
 
     test("sealed trait typeName should be complete and unchanged") {
       TypeNameInfo.gen[Color].name
@@ -596,5 +655,32 @@ object Tests extends TestApp {
                  "p23")
       Eq.gen[VeryLong].equal(vl, vl)
     }.assert(_ == true)
+
+    test("not attempt to derive instances for refined types") {
+      scalac"Show.gen[Character]"
+    }.assert(_ == TypecheckError(txt"magnolia: could not infer Show.Typeclass for refined type magnolia.tests.Character.Id"))
+
+    test("derive instances for types with refined types if implicit provided") {
+      scalac"Show.gen[AnotherCharacter]"
+    }.assert(_ == Returns(fqt"magnolia.examples.Show[String,magnolia.tests.AnotherCharacter]"))
+
+    test("not attempt to derive instances for Java enums") {
+      scalac"Show.gen[WeekDay]"
+    }.assert(_ == TypecheckError(txt"magnolia: could not infer Show.Typeclass for type magnolia.tests.WeekDay"))
+
+    test("determine subtypes of Exactly[Int]") {
+      implicit def hideFallbackWarning: TypeNameInfo[Int] = TypeNameInfo.fallback[Int]
+      TypeNameInfo.gen[Exactly[Int]].subtypeNames.map(_.short).mkString(" | ")
+    }.assert(_ == "Custom | Int")
+
+    test("determine subtypes of Covariant[String]") {
+      implicit def hideFallbackWarning: TypeNameInfo[String] = TypeNameInfo.fallback[String]
+      TypeNameInfo.gen[Covariant[String]].subtypeNames.map(_.short).mkString(" | ")
+    }.assert(_ == "Custom | Nothing | String")
+
+    test("determine subtypes of Contravariant[Double]") {
+      implicit def hideFallbackWarning: TypeNameInfo[Double] = TypeNameInfo.fallback[Double]
+      TypeNameInfo.gen[Contravariant[Double]].subtypeNames.map(_.short).mkString(" | ")
+    }.assert(_ == "Any | Custom")
   }
 }
